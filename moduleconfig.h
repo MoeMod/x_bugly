@@ -7,7 +7,7 @@
 #define MODULE_NAME "[x] Bugly Module"
 #define MODULE_VERSION "1.0"
 #define MODULE_AUTHOR "Xiaobaibai"
-#define MODULE_URL "http://thanatos.zone"
+#define MODULE_URL "https://www.moemod.com/"
 #define MODULE_LOGTAG "[CitruS]"
 #define MODULE_LIBRARY "x_bugly"
 #define MODULE_LIBCLASS ""

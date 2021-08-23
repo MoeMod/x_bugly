@@ -8,7 +8,8 @@
 #include <psapi.h>
 #include "metahook.h"
 
-using namespace amxxmodule;
+#include <vector>
+#include <stdexcept>
 
 void TryThrowAMX();
 void Sys_PrintLog(const char* str);
@@ -164,9 +165,6 @@ long _stdcall Sys_Crash(PEXCEPTION_POINTERS pInfo)
 	// save config
 	PrintCxxStackTrace(pInfo);
 
-	// TODO
-	abort();
-
 	if (oldFilter)
 		return oldFilter(pInfo);
 	return EXCEPTION_CONTINUE_EXECUTION;
@@ -200,6 +198,7 @@ metahook::hook_t* g_hookDebugger_EndExec = nullptr;
 void __fastcall Hook_Debugger_EndExec(Debugger* that, int edx)
 {
 	g_vecDebuggerStack.pop_back();
+	return g_pfnDebugger_EndExec(that, edx);
 }
 void (__fastcall *g_pfnDebugger_DisplayTrace)(Debugger* that, int edx, const char *msg) = nullptr;
 
@@ -224,7 +223,7 @@ void TryThrowAMX()
 void Sys_PrintLog(const char* str)
 {
 	puts(str);
-	MF_Log("[x_bugly] %s", str);
+	MF_Log("[x_bugly] %s\n", str);
 }
 
 [[noreturn]] static cell AMX_NATIVE_CALL x_bugly_crash_nullptr(AMX* amx, cell* params)
@@ -276,23 +275,31 @@ AMX_NATIVE_INFO Plugin_Natives[] =
 	{NULL,				NULL},
 };
 
-void ServerActivate_Post(hlsdk::edict_t*, int, int)
+void ServerActivate_Post(edict_t*, int, int)
 {
 	Sys_SetupCrashHandler();
 
 	using namespace metahook;
 	HMODULE hAmxxModule = GetModuleHandle("amxmodx_mm");
 	auto dwAmxxBase = reinterpret_cast<void*>(g_pMetaHookAPI->GetModuleBase(hAmxxModule));
+	auto dwAmxxSize = g_pMetaHookAPI->GetModuleSize(hAmxxModule);
+	MF_PrintSrvConsole("[x_bugly] amxmodx_mm base at %p, %x\n", dwAmxxBase, dwAmxxSize);
 	constexpr char ANY = 0x2A;
 	constexpr char END = '\0';
 
 	char SIG_Debugger_BeginExec[] = { 0x57,0x8B,0xF9,0xFF,0x47,ANY,0x8B,0x47,ANY,0x3B,0x47,ANY,0x7C,ANY,0x55,0x6A,ANY,0xE8,ANY,ANY,ANY,ANY,0x33,0xED,END };
-	auto pfnDebugger_BeginExec = g_pMetaHookAPI->SearchPattern(dwAmxxBase, 0x200, SIG_Debugger_BeginExec, sizeof(SIG_Debugger_BeginExec) - 1);
-	MF_PrintSrvConsole("[x_bugly] Found Debugger::BeginExec at %x", pfnDebugger_BeginExec);
+	char SIG_Debugger_BeginExec2[] = { 0x57,0x8B,0xF9,0x83,0x47,ANY,ANY,0x8B,0x47,ANY,0x3B,0x47,ANY,0x7C,ANY,0x55,0x6A,ANY,0xE8,ANY,ANY,ANY,ANY,0x33,0xED,END };
+	auto pfnDebugger_BeginExec = g_pMetaHookAPI->SearchPattern(dwAmxxBase, dwAmxxSize, SIG_Debugger_BeginExec, sizeof(SIG_Debugger_BeginExec) - 1);
+	if(!pfnDebugger_BeginExec)
+		pfnDebugger_BeginExec = g_pMetaHookAPI->SearchPattern(dwAmxxBase, dwAmxxSize, SIG_Debugger_BeginExec2, sizeof(SIG_Debugger_BeginExec2) - 1);
+	MF_PrintSrvConsole("[x_bugly] Found Debugger::BeginExec at %p\n", pfnDebugger_BeginExec);
 	
 	char SIG_Debugger_EndExec[] = { 0x56,0x8B,0xF1,0x8B,0x46,ANY,0x8B,0x4E,ANY,0x8B,0x0C,0x81,0xE8,ANY,ANY,ANY,ANY,0xFF,0x4E,ANY,0x5E,0xC3,END };
-	auto pfnDebugger_EndExec = g_pMetaHookAPI->SearchPattern(dwAmxxBase, 0x200, SIG_Debugger_EndExec, sizeof(SIG_Debugger_EndExec) - 1);
-	MF_PrintSrvConsole("[x_bugly] Found Debugger::EndExec at %x", pfnDebugger_EndExec);
+	char SIG_Debugger_EndExec2[] = { 0x56,0x8B,0xF1,0x8B,0x46,ANY,0x8B,0x4E,ANY,0x8B,0x0C,0x81,0xE8,ANY,ANY,ANY,ANY,0x83,0x46,ANY,ANY,0x5E,0xC3,END };
+	auto pfnDebugger_EndExec = g_pMetaHookAPI->SearchPattern(dwAmxxBase, dwAmxxSize, SIG_Debugger_EndExec, sizeof(SIG_Debugger_EndExec) - 1);
+	if (!pfnDebugger_EndExec)
+		pfnDebugger_EndExec = g_pMetaHookAPI->SearchPattern(dwAmxxBase, dwAmxxSize, SIG_Debugger_EndExec2, sizeof(SIG_Debugger_EndExec2) - 1);
+	MF_PrintSrvConsole("[x_bugly] Found Debugger::EndExec at %p\n", pfnDebugger_EndExec);
 
 	char SIG_Debugger_DisplayTrace[] = { 
 		// sub esp, ?
@@ -321,8 +328,38 @@ void ServerActivate_Post(hlsdk::edict_t*, int, int)
 		0x50,
 		END
 	};
-	auto pfnDebugger_DisplayTrace = g_pMetaHookAPI->SearchPattern(dwAmxxBase, 0x200, SIG_Debugger_DisplayTrace, sizeof(SIG_Debugger_DisplayTrace) - 1);
-	MF_PrintSrvConsole("[x_bugly] Found Debugger::DisplayTrace at %x", pfnDebugger_DisplayTrace);
+	char SIG_Debugger_DisplayTrace2[] = {
+		// sub esp, ?
+		0x81,0xEC,ANY,ANY,ANY,ANY,
+		// mov eax, ?
+		0xA1,ANY,ANY,ANY,ANY,
+		// xor eax, esp
+		0x33,0xC4,
+		// mov [esp+?+?], eax
+		0x89,0x84,0x24,ANY,ANY,ANY,ANY,
+		// mov eax, [esp+?+?]
+		0x8B,0x84,0x24,ANY,ANY,ANY,ANY,
+		// test eax, eax
+		0x85,0xC0,
+		// push ebx
+		0x53,
+		// push esi
+		0x56,
+		// push edi
+		0x57,
+		// mov edi,ecx
+		0x8B,0xF9,
+		// jz ?
+		0x74,ANY,
+		// push eax
+		0x50,
+		END
+	};
+	auto pfnDebugger_DisplayTrace = g_pMetaHookAPI->SearchPattern(dwAmxxBase, dwAmxxSize, SIG_Debugger_DisplayTrace, sizeof(SIG_Debugger_DisplayTrace) - 1);
+	if(!pfnDebugger_DisplayTrace)
+		pfnDebugger_DisplayTrace = g_pMetaHookAPI->SearchPattern(dwAmxxBase, dwAmxxSize, SIG_Debugger_DisplayTrace2, sizeof(SIG_Debugger_DisplayTrace2) - 1);
+		
+	MF_PrintSrvConsole("[x_bugly] Found Debugger::DisplayTrace at %p\n", pfnDebugger_DisplayTrace);
 
 	g_hookDebugger_BeginExec = g_pMetaHookAPI->InlineHook(pfnDebugger_BeginExec, Hook_Debugger_BeginExec, (void*&)g_pfnDebugger_BeginExec);
 	g_hookDebugger_EndExec = g_pMetaHookAPI->InlineHook(pfnDebugger_EndExec, Hook_Debugger_EndExec, (void*&)g_pfnDebugger_EndExec);
