@@ -1,0 +1,3 @@
+[submodule "amxx_module_sdk"]
+	path = amxx_module_sdk
+	url = https://github.com/MoeMod/amxx_module_sdk
